@@ -95,9 +95,43 @@
     .legend-bar { height: 10px; border-radius: 999px; overflow: hidden; border:1px solid var(--border); background: rgba(0,0,0,.35); }
     .legend-ticks { display:flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 6px; }
     .legend-note { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.25; }
+
+    /* loader overlay */
+    #loadingOverlay{
+      position: fixed; inset: 0;
+      background: rgba(11,15,20,.72);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 5000;
+      backdrop-filter: blur(6px);
+    }
+    #loadingOverlay.hidden{ display:none; }
+    .loaderCard{
+      width: min(540px, calc(100vw - 40px));
+      border:1px solid var(--border);
+      background: rgba(15,23,33,.94);
+      border-radius: 14px;
+      padding: 14px 14px;
+      box-shadow: var(--shadow);
+    }
+    .loaderTitle{ font-size: 13px; font-weight: 700; }
+    .loaderMsg{ margin-top: 8px; font-size: 12px; color: var(--muted); line-height: 1.35; }
+    .barOuter{ margin-top: 10px; height: 10px; border-radius: 999px; background: rgba(255,255,255,.06); border:1px solid var(--border); overflow:hidden; }
+    .barInner{ height:100%; width: 12%; background: rgba(122,166,255,.55); border-radius: 999px; animation: indet 1.3s ease-in-out infinite; }
+    @keyframes indet{ 0%{ transform: translateX(-40%);} 50%{ transform: translateX(220%);} 100%{ transform: translateX(-40%);} }
   </style>
 </head>
 <body>
+  <div id="loadingOverlay">
+    <div class="loaderCard">
+      <div class="loaderTitle">Loading…</div>
+      <div class="loaderMsg" id="loadingMsg">Starting</div>
+      <div class="barOuter"><div class="barInner"></div></div>
+      <div class="loaderMsg" style="margin-top:10px;">
+        If this hangs on GitHub Pages, open DevTools → Console and check for 404s on shapefile parts.
+      </div>
+    </div>
+  </div>
+
   <div id="app">
     <aside id="sidebar">
       <div class="topbar">
@@ -115,6 +149,17 @@
         <div class="kpi">
           <div class="card"><div class="k">Shapes</div><div class="v" id="kpiShapes">–</div></div>
           <div class="card"><div class="k">With data</div><div class="v" id="kpiData">–</div></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="label">Data file</div>
+        <select id="dataFile">
+          <option value="precinct-data.csv">precinct-data.csv (raw; key derived from GEOID20)</option>
+          <option value="precinct-data-pctkey.csv">precinct-data-pctkey.csv (pre-keyed to PCTKEY)</option>
+        </select>
+        <div class="status" style="margin-top:8px;">
+          If your join coverage looks wrong, switch to the <code>pctkey</code> file.
         </div>
       </div>
 
@@ -173,10 +218,11 @@
       </div>
 
       <div class="section">
-        <div class="label">Files (same folder as index.html)</div>
+        <div class="label">Repo layout expected</div>
         <div class="status">
-          • <code>Precincts24G_WGS84.zip</code> (shapefile, reprojected to WGS84)<br/>
-          • <code>precinct-data-pctkey.csv</code> (aggregated election + census data keyed by PCTKEY)
+          <b>Folder:</b> <code>Precincts24G_WGS84/</code><br/>
+          <b>Inside that folder:</b> either <code>Precincts24G_WGS84.{shp,shx,dbf,prj,cpg}</code> or <code>Precincts24G.{shp,shx,dbf,prj,cpg}</code><br/>
+          <b>Data files at root:</b> <code>precinct-data.csv</code> and/or <code>precinct-data-pctkey.csv</code>
         </div>
       </div>
     </aside>
@@ -187,18 +233,22 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/chroma-js@2.4.2/chroma.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
 
   <script>
     const ASSETS = {
-      shpZip: "Precincts24G_WGS84.zip",
-      dataCsv: "precinct-data-pctkey.csv"
+      shpFolder: "Precincts24G_WGS84",
+      // we will probe these basenames INSIDE shpFolder/
+      shpBasenames: ["Precincts24G_WGS84", "Precincts24G"],
+      defaultDataCsv: "precinct-data.csv"
     };
 
     const state = {
       activeTab: "results",
       partyTrend: "D",
       partyTrendChg: "D",
+      dataFile: ASSETS.defaultDataCsv,
       resultsContest: null,
       swingFrom: null,
       swingTo: null,
@@ -214,22 +264,43 @@
     let legendCtrl = null;
 
     function el(id){ return document.getElementById(id); }
-
     function setStatus(msg){ el("status").textContent = msg; }
+    function setLoading(msg){ el("loadingMsg").textContent = msg; }
+
+    function hideLoading(){ el("loadingOverlay").classList.add("hidden"); }
+    function showLoading(){ el("loadingOverlay").classList.remove("hidden"); }
 
     function fmtPctPts(x){
       if (x === null || x === undefined || Number.isNaN(x)) return "—";
       const s = (x >= 0 ? "+" : "") + x.toFixed(1);
       return s + " pts";
     }
-
     function fmtNum(x){
       if (x === null || x === undefined || Number.isNaN(x)) return "—";
       return Math.round(x).toLocaleString();
     }
 
-    function votes(feat, contest){
-      const p = feat.properties || {};
+    function geoid20ToPctKey(geoid20){
+      if (geoid20 === null || geoid20 === undefined) return null;
+      let s = String(geoid20).trim();
+      // handle numeric values that may come in without leading zeros
+      if (/^\d+$/.test(s)) s = s.padStart(11, "0");
+      if (s.length < 11) s = s.padStart(11, "0");
+      // GEOID20 format used in your raw CSV: 48 + countyFIPS(3) + precinct(6)
+      const county = String(parseInt(s.slice(2,5), 10)); // strip leading zeros
+      const prec6 = s.slice(5);
+      const prec4 = prec6.slice(-4).padStart(4, "0");
+      return county + prec4;
+    }
+
+    function normalizeRowKey(r){
+      if (!r) return null;
+      if (r.PCTKEY !== undefined && r.PCTKEY !== null && String(r.PCTKEY).trim() !== "") return String(r.PCTKEY).trim();
+      if (r.GEOID20 !== undefined && r.GEOID20 !== null && String(r.GEOID20).trim() !== "") return geoid20ToPctKey(r.GEOID20);
+      return null;
+    }
+
+    function votesFromProps(p, contest){
       const dem = +p[contest + "_Dem"] || 0;
       const rep = +p[contest + "_Rep"] || 0;
       const tot2 = dem + rep;
@@ -239,18 +310,22 @@
       const margin = (dem - rep) / tot2;
       return { dem, rep, tot2, demPct, repPct, margin };
     }
+    function votes(feat, contest){
+      return votesFromProps((feat.properties||{}), contest);
+    }
 
     function statewide(contest){
       let dem = 0, rep = 0;
       for (const f of features){
-        const v = votes(f, contest);
+        const p = f.properties || {};
+        if (!p.__hasData) continue;
+        const v = votesFromProps(p, contest);
         dem += v.dem; rep += v.rep;
       }
       const tot = dem + rep;
       if (!tot) return { dem, rep, tot: 0, demPct: null, repPct: null };
       return { dem, rep, tot, demPct: dem / tot, repPct: rep / tot };
     }
-
     function getStatewide(contest){
       if (statewideCache.has(contest)) return statewideCache.get(contest);
       const s = statewide(contest);
@@ -281,9 +356,9 @@
       return [-maxAbs, 0, +maxAbs];
     }
 
-    function colorFor(metric, v){
+    function colorFor(scale, v){
       if (v === null || v === undefined || Number.isNaN(v)) return "rgba(120,130,145,.25)";
-      return metric.scale(v).hex();
+      return scale(v).hex();
     }
 
     function buildContestList(sampleRow){
@@ -292,9 +367,8 @@
       for (const k of keys){
         if (!k.endsWith("_Dem")) continue;
         const prefix = k.slice(0, -4);
-        if (sampleRow.hasOwnProperty(prefix + "_Rep")) prefixes.add(prefix);
+        if (Object.prototype.hasOwnProperty.call(sampleRow, prefix + "_Rep")) prefixes.add(prefix);
       }
-      // Prefer more recent + more relevant contest ordering
       const arr = Array.from(prefixes);
       arr.sort((a,b)=>{
         const ya = (a.match(/^E_(\d{2})_/)||[])[1];
@@ -308,7 +382,6 @@
     }
 
     function labelContest(prefix){
-      // Example: E_24_PRES -> 2024 PRES
       const m = prefix.match(/^E_(\d{2})_(.+)$/);
       if (!m) return prefix;
       const yy = m[1], rest = m[2];
@@ -343,54 +416,6 @@
       btnB.classList.toggle("active", which === "R");
     }
 
-    function styleForFeature(feat){
-      const p = feat.properties || {};
-      const has = !!p.__hasData;
-
-      let fill = "rgba(120,130,145,.25)";
-      let weight = 0.55;
-      let opacity = 0.55;
-      let color = "rgba(0,0,0,.45)";
-      let fillOpacity = has ? 0.86 : 0.10;
-
-      const tab = state.activeTab;
-
-      if (!has){
-        return { fillColor: fill, fillOpacity, color, opacity, weight, lineJoin: "round", lineCap: "round" };
-      }
-
-      if (tab === "results"){
-        const c = state.resultsContest;
-        const m = votes(feat, c).margin; // -1..1
-        const v = (m === null ? null : m * 100);
-        const metric = {
-          scale: chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain([-100,0,100]).mode("lab")
-        };
-        fill = colorFor(metric, v);
-      } else if (tab === "swing"){
-        const from = state.swingFrom, to = state.swingTo;
-        const m1 = votes(feat, from).margin;
-        const m2 = votes(feat, to).margin;
-        const v = (m1 === null || m2 === null) ? null : (m2 - m1) * 100;
-        const metric = swingMetric();
-        fill = colorFor(metric, v);
-      } else if (tab === "trend"){
-        const c = state.trendContest;
-        const party = state.partyTrend;
-        const v = trendDelta(feat, c, party); // trend - 50
-        const metric = trendMetric(party);
-        fill = colorFor(metric, v);
-      } else if (tab === "trendChange"){
-        const from = state.trendFrom, to = state.trendTo;
-        const party = state.partyTrendChg;
-        const v = trendChange(feat, from, to, party);
-        const metric = trendChgMetric(party);
-        fill = colorFor(metric, v);
-      }
-
-      return { fillColor: fill, fillOpacity, color, opacity, weight, lineJoin: "round", lineCap: "round" };
-    }
-
     function swingMetric(){
       const from = state.swingFrom, to = state.swingTo;
       const dom = computeDomain(f=>{
@@ -414,7 +439,6 @@
     }
 
     function trendMetric(party){
-      // Domain on delta from baseline 50; symmetric around 0.
       const c = state.trendContest;
       const dom = computeDomain(f=>trendDelta(f, c, party), [-25,0,25]);
       const colors = (party === "D") ? ["#b2182b","#f7f7f7","#2166ac"] : ["#2166ac","#f7f7f7","#b2182b"];
@@ -445,42 +469,90 @@
       return { domain: dom, scale: chroma.scale(colors).domain(dom).mode("lab") };
     }
 
+    function styleForFeature(feat){
+      const p = feat.properties || {};
+      const has = !!p.__hasData;
+
+      let fill = "rgba(120,130,145,.25)";
+      let weight = 0.55;
+      let opacity = 0.65;
+      let color = "rgba(0,0,0,.48)";
+      let fillOpacity = has ? 0.86 : 0.10;
+
+      if (!has){
+        return { fillColor: fill, fillOpacity, color, opacity, weight, lineJoin: "round", lineCap: "round" };
+      }
+
+      const tab = state.activeTab;
+
+      if (tab === "results"){
+        const c = state.resultsContest;
+        const m = votes(feat, c).margin;
+        const v = (m === null ? null : m * 100);
+        const scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain([-100,0,100]).mode("lab");
+        fill = colorFor(scale, v);
+      } else if (tab === "swing"){
+        const from = state.swingFrom, to = state.swingTo;
+        const m1 = votes(feat, from).margin;
+        const m2 = votes(feat, to).margin;
+        const v = (m1 === null || m2 === null) ? null : (m2 - m1) * 100;
+        const metric = swingMetric();
+        fill = colorFor(metric.scale, v);
+      } else if (tab === "trend"){
+        const c = state.trendContest;
+        const party = state.partyTrend;
+        const v = trendDelta(feat, c, party);
+        const metric = trendMetric(party);
+        fill = colorFor(metric.scale, v);
+      } else if (tab === "trendChange"){
+        const from = state.trendFrom, to = state.trendTo;
+        const party = state.partyTrendChg;
+        const v = trendChange(feat, from, to, party);
+        const metric = trendChgMetric(party);
+        fill = colorFor(metric.scale, v);
+      }
+
+      return { fillColor: fill, fillOpacity, color, opacity, weight, lineJoin: "round", lineCap: "round" };
+    }
+
     function updateLegend(){
       if (!legendCtrl) return;
 
       let title = "", domain = [-1,0,1], note = "";
+      let scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain([-1,0,1]).mode("lab");
+
       if (state.activeTab === "results"){
         title = "Margin (D − R), pts";
         domain = [-100,0,100];
         note = "Negative = R-leaning. Positive = D-leaning.";
+        scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain(domain).mode("lab");
       } else if (state.activeTab === "swing"){
         const m = swingMetric();
         title = "Swing (To − From), pts";
         domain = m.domain;
         note = "Negative = shifts R. Positive = shifts D.";
+        scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain(domain).mode("lab");
       } else if (state.activeTab === "trend"){
         const m = trendMetric(state.partyTrend);
         title = `${state.partyTrend} trend delta (index − 50)`;
         domain = m.domain;
         note = "Baseline 0 means precinct equals statewide trend.";
+        scale = m.scale;
       } else if (state.activeTab === "trendChange"){
         const m = trendChgMetric(state.partyTrendChg);
         title = `${state.partyTrendChg} trend change (To − From)`;
         domain = m.domain;
         note = "Units are trend-index points.";
+        scale = m.scale;
       }
 
-      const colors = (state.activeTab === "trend" && state.partyTrend === "R") || (state.activeTab === "trendChange" && state.partyTrendChg === "R")
-        ? ["#2166ac","#f7f7f7","#b2182b"]
-        : ["#b2182b","#f7f7f7","#2166ac"];
-
-      const scale = chroma.scale(colors).domain(domain).mode("lab");
       const stops = [];
       for (let i=0;i<=30;i++){
         const t=i/30;
         const v = domain[0] + t*(domain[2]-domain[0]);
         stops.push(`${scale(v).hex()} ${Math.round(t*100)}%`);
       }
+
       legendCtrl._div.querySelector(".legend-title").textContent = title;
       legendCtrl._div.querySelector(".legend-bar").style.background = `linear-gradient(90deg, ${stops.join(", ")})`;
       const ticks = legendCtrl._div.querySelectorAll(".legend-ticks span");
@@ -492,7 +564,7 @@
 
     function updateMap(){
       if (!geoLayer) return;
-      statewideCache = new Map(); // invalidate, since choices can change what gets computed
+      statewideCache = new Map();
       geoLayer.setStyle(styleForFeature);
       updateLegend();
     }
@@ -501,19 +573,16 @@
       layer.on("click", ()=>{
         const p = feat.properties || {};
         const key = p.PCTKEY || "—";
-        const cnty = p.CNTY ?? p.CNTY; // keep original
-        const prec = p.PREC ?? p.PREC;
-
-        let tab = state.activeTab;
         let html = `<div class="popup-title">PCTKEY ${key}</div>`;
         html += `<div class="popup-small">County: ${p.CNTY} • Precinct: ${p.PREC}</div>`;
 
         if (!p.__hasData){
-          html += `<div class="popup-small">No joined election data for this precinct (check mapping coverage).</div>`;
+          html += `<div class="popup-small">No joined election data for this precinct.</div>`;
           layer.bindPopup(html, { maxWidth: 320 }).openPopup();
           return;
         }
 
+        const tab = state.activeTab;
         const contestFor = (tab==="results") ? state.resultsContest :
                            (tab==="trend") ? state.trendContest :
                            (tab==="swing") ? state.swingTo :
@@ -573,37 +642,88 @@
       });
     }
 
-    async function loadShapefileZip(url){
-      const buf = await fetch(url).then(r=>r.arrayBuffer());
+    async function urlExists(url){
+      try {
+        const r = await fetch(url, { method: "HEAD" });
+        if (r.ok) return true;
+      } catch(_e) {}
+      // Some hosts block HEAD; try GET (range isn't always supported on GH Pages)
+      try {
+        const r2 = await fetch(url);
+        return r2.ok;
+      } catch(_e2) {
+        return false;
+      }
+    }
+
+    async function pickShapefileBase(){
+      for (const base of ASSETS.shpBasenames){
+        const fullBase = `${ASSETS.shpFolder}/${base}`;
+        const shpUrl = `${fullBase}.shp`;
+        const dbfUrl = `${fullBase}.dbf`;
+        const ok = await urlExists(shpUrl) && await urlExists(dbfUrl);
+        if (ok) return fullBase;
+      }
+      throw new Error(`Cannot find shapefile parts in ${ASSETS.shpFolder}/. Expected basenames: ${ASSETS.shpBasenames.join(", ")}`);
+    }
+
+    async function buildZipFromFolder(basePathNoExt){
+      const baseName = basePathNoExt.split("/").pop();
+      const exts = ["shp","shx","dbf","prj","cpg"];
+      const zip = new JSZip();
+      await Promise.all(exts.map(async ext => {
+        const url = `${basePathNoExt}.${ext}`;
+        const r = await fetch(url);
+        if (!r.ok){
+          // cpg is optional
+          if (ext === "cpg") return;
+          throw new Error(`Missing shapefile part: ${url} (${r.status})`);
+        }
+        const buf = await r.arrayBuffer();
+        zip.file(`${baseName}.${ext}`, buf);
+      }));
+      // build zip in memory; no zip file in repo
+      return await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
+    }
+
+    async function loadShapefileFromFolder(){
+      const base = await pickShapefileBase();
+      setLoading(`Reading shapefile parts from ${base}.* (zipped in-memory)`);
+      const zipBuf = await buildZipFromFolder(base);
       // shpjs returns GeoJSON FeatureCollection
-      return await shp(buf);
+      return await shp(zipBuf);
     }
 
     function mergeDataIntoFeatures(fc, rows){
       dataByKey = new Map();
       for (const r of rows){
-        if (!r.PCTKEY) continue;
-        dataByKey.set(String(r.PCTKEY), r);
+        const key = normalizeRowKey(r);
+        if (!key) continue;
+        dataByKey.set(String(key), r);
       }
+
       let withData = 0;
       for (const f of fc.features){
-        const key = String((f.properties||{}).PCTKEY || "");
+        const props = f.properties || (f.properties = {});
+        const key = String(props.PCTKEY || "");
         const r = dataByKey.get(key);
+
         if (r){
-          // merge numeric columns onto properties
           for (const k of Object.keys(r)){
+            // don't overwrite geometry keys
             if (k === "PCTKEY") continue;
-            f.properties[k] = r[k];
+            props[k] = r[k];
           }
-          f.properties.__hasData = true;
+          props.__hasData = true;
           withData++;
         } else {
-          f.properties.__hasData = false;
+          props.__hasData = false;
         }
-        // normalize essential props
-        if (f.properties.CNTY !== undefined) f.properties.CNTY = parseInt(f.properties.CNTY, 10);
-        if (f.properties.PREC !== undefined) f.properties.PREC = String(f.properties.PREC).padStart(4,"0");
+
+        if (props.CNTY !== undefined) props.CNTY = parseInt(props.CNTY, 10);
+        if (props.PREC !== undefined) props.PREC = String(props.PREC).padStart(4,"0");
       }
+
       return { withData, total: fc.features.length };
     }
 
@@ -630,12 +750,7 @@
         onEachFeature: attachPopup
       }).addTo(map);
 
-      // Fit bounds to Texas
-      try {
-        map.fitBounds(geoLayer.getBounds(), { padding: [10,10] });
-      } catch(e){
-        // ignore
-      }
+      try { map.fitBounds(geoLayer.getBounds(), { padding: [10,10] }); } catch(_e) {}
 
       legendCtrl = L.control({ position: "bottomright" });
       legendCtrl.onAdd = function(){
@@ -657,11 +772,15 @@
         btn.addEventListener("click", ()=> applyTab(btn.dataset.tab));
       });
 
+      el("dataFile").addEventListener("change", async ()=>{
+        state.dataFile = el("dataFile").value;
+        await reloadDataOnly();
+      });
+
       el("resultsContest").addEventListener("change", ()=>{
         state.resultsContest = el("resultsContest").value;
         updateMap();
       });
-
       el("swingFrom").addEventListener("change", ()=>{
         state.swingFrom = el("swingFrom").value;
         updateMap();
@@ -670,12 +789,10 @@
         state.swingTo = el("swingTo").value;
         updateMap();
       });
-
       el("trendContest").addEventListener("change", ()=>{
         state.trendContest = el("trendContest").value;
         updateMap();
       });
-
       el("trendFrom").addEventListener("change", ()=>{
         state.trendFrom = el("trendFrom").value;
         updateMap();
@@ -708,27 +825,69 @@
       });
     }
 
-    async function main(){
-      setStatus("Loading shapefile (zip)…");
-      const fc = await loadShapefileZip(ASSETS.shpZip);
+    async function reloadDataOnly(){
+      showLoading();
+      setLoading(`Loading ${state.dataFile}…`);
+      setStatus(`Loading ${state.dataFile}…`);
 
-      setStatus("Loading precinct data…");
-      const rows = await loadCsv(ASSETS.dataCsv);
+      const rows = await loadCsv(state.dataFile);
+      const joined = mergeDataIntoFeatures({ features }, rows);
 
-      setStatus("Joining data…");
-      const joined = mergeDataIntoFeatures(fc, rows);
-      features = fc.features;
-
-      // Build contest list from first row (or any row)
-      const sample = rows.find(r => r && r.PCTKEY) || rows[0] || {};
+      const sample = rows.find(r => r && (r.PCTKEY || r.GEOID20)) || rows[0] || {};
       contests = buildContestList(sample);
+      if (!contests.length) throw new Error("No contests found (expected columns like E_24_PRES_Dem / _Rep)." );
 
+      const prefer = ["E_24_PRES","E_24_SEN","E_22_GOV","E_20_PRES","E_20_SEN","E_18_SEN","E_16_PRES","E_16-20_COMP"];
+      const pick = (arr)=> prefer.find(x=>arr.includes(x)) || arr[0];
+
+      // keep current selections if possible
+      state.resultsContest = contests.includes(state.resultsContest) ? state.resultsContest : pick(contests);
+      state.swingFrom = contests.includes(state.swingFrom) ? state.swingFrom : (contests.includes("E_20_PRES") ? "E_20_PRES" : contests[0]);
+      state.swingTo = contests.includes(state.swingTo) ? state.swingTo : (contests.includes("E_24_PRES") ? "E_24_PRES" : pick(contests));
+      state.trendContest = contests.includes(state.trendContest) ? state.trendContest : pick(contests);
+      state.trendFrom = contests.includes(state.trendFrom) ? state.trendFrom : (contests.includes("E_20_PRES") ? "E_20_PRES" : contests[0]);
+      state.trendTo = contests.includes(state.trendTo) ? state.trendTo : (contests.includes("E_24_PRES") ? "E_24_PRES" : pick(contests));
+
+      populateSelect(el("resultsContest"), contests, state.resultsContest);
+      populateSelect(el("swingFrom"), contests, state.swingFrom);
+      populateSelect(el("swingTo"), contests, state.swingTo);
+      populateSelect(el("trendContest"), contests, state.trendContest);
+      populateSelect(el("trendFrom"), contests, state.trendFrom);
+      populateSelect(el("trendTo"), contests, state.trendTo);
+
+      el("kpiShapes").textContent = joined.total.toLocaleString();
+      el("kpiData").textContent = joined.withData.toLocaleString();
+
+      statewideCache = new Map();
+      updateMap();
+
+      setStatus(`Loaded. Shapes: ${joined.total.toLocaleString()} • With data: ${joined.withData.toLocaleString()}`);
+      hideLoading();
+    }
+
+    async function main(){
+      showLoading();
+      setLoading("Loading precinct geometries…");
+      setStatus("Loading precinct geometries…");
+      const fc = await loadShapefileFromFolder();
+
+      features = fc.features;
+      setLoading(`Loaded ${features.length.toLocaleString()} polygons. Loading data…`);
+      setStatus("Loading precinct data…");
+
+      // initial data load uses dropdown value
+      state.dataFile = el("dataFile").value;
+      const rows = await loadCsv(state.dataFile);
+
+      setLoading("Joining data to precincts…");
+      const joined = mergeDataIntoFeatures(fc, rows);
+
+      const sample = rows.find(r => r && (r.PCTKEY || r.GEOID20)) || rows[0] || {};
+      contests = buildContestList(sample);
       if (!contests.length){
-        setStatus("No contests found (expected columns like E_24_PRES_Dem / _Rep).");
-        return;
+        throw new Error("No contests found (expected columns like E_24_PRES_Dem / _Rep)." );
       }
 
-      // Defaults (try to pick 2024 PRES if present)
       const prefer = ["E_24_PRES","E_24_SEN","E_22_GOV","E_20_PRES","E_20_SEN","E_18_SEN","E_16_PRES","E_16-20_COMP"];
       const pick = (arr)=> prefer.find(x=>arr.includes(x)) || arr[0];
 
@@ -753,11 +912,13 @@
       initMap(fc);
 
       setStatus(`Loaded. Shapes: ${joined.total.toLocaleString()} • With data: ${joined.withData.toLocaleString()}`);
+      hideLoading();
     }
 
     main().catch(err=>{
       console.error(err);
-      setStatus("Load failed. Check console + confirm files are served over HTTP (not file://).");
+      setStatus("Load failed. Open console. Most common cause: wrong shapefile filenames inside Precincts24G_WGS84/.");
+      setLoading(String(err && err.message ? err.message : err));
     });
   </script>
 </body>
