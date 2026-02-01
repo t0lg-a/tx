@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Texas Precinct Map Visualizer</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+
+  <style>
+    :root{
+      --bg:#0b0f14;
+      --panel:#0f1721;
+      --panel2:#101b29;
+      --text:#e6eef7;
+      --muted:#93a4b8;
+      --border:rgba(255,255,255,.08);
+      --shadow:0 10px 30px rgba(0,0,0,.35);
+      --accent:#7aa6ff;
+    }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; }
+    #app { height: 100%; display: grid; grid-template-columns: 360px 1fr; }
+    #sidebar { border-right: 1px solid var(--border); background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%); box-shadow: var(--shadow); z-index: 1000; overflow: auto; }
+    #map { height: 100%; }
+
+    .topbar { position: sticky; top: 0; background: rgba(15,23,33,.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); padding: 14px 14px 10px; z-index: 10; }
+    .title { font-weight: 700; font-size: 14px; letter-spacing: .3px; margin: 0 0 10px; }
+    .tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .tabbtn{
+      background: rgba(255,255,255,.06);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1.1;
+      transition: background .12s ease, border-color .12s ease;
+    }
+    .tabbtn.active { background: rgba(122,166,255,.16); border-color: rgba(122,166,255,.45); }
+    .section { padding: 14px; border-bottom: 1px solid var(--border); }
+    .label { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+    select, button, input[type="checkbox"]{
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
+      padding: 10px 10px;
+      font-size: 12px;
+      outline: none;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .pillrow{ display:flex; gap:8px; }
+    .pill{
+      flex:1;
+      border:1px solid var(--border);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 10px;
+      cursor:pointer;
+      font-size: 12px;
+    }
+    .pill.active { background: rgba(122,166,255,.16); border-color: rgba(122,166,255,.45); }
+    .status { font-size: 12px; color: var(--muted); line-height: 1.35; }
+    .kpi { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+    .card { border:1px solid var(--border); background: rgba(255,255,255,.04); border-radius: 12px; padding: 10px; }
+    .card .k { font-size: 11px; color: var(--muted); }
+    .card .v { font-size: 13px; margin-top: 4px; font-weight: 600; }
+
+    .hidden { display: none; }
+
+    /* Leaflet overrides */
+    .leaflet-control-attribution { background: rgba(15,23,33,.8) !important; color: var(--muted) !important; border:1px solid var(--border) !important; border-radius: 10px; padding: 6px 10px !important; }
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: rgba(15,23,33,.96); color: var(--text); border:1px solid var(--border); }
+    .leaflet-popup-content { margin: 10px 12px; }
+    .popup-title { font-weight: 700; margin-bottom: 6px; }
+    .popup-small { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .popup-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .popup-grid div { border:1px solid var(--border); border-radius: 10px; padding: 8px; background: rgba(255,255,255,.04); }
+    .popup-grid .k { font-size: 11px; color: var(--muted); }
+    .popup-grid .v { font-size: 12px; margin-top: 4px; font-weight: 650; }
+
+    .legend {
+      background: rgba(15,23,33,.92);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      box-shadow: var(--shadow);
+      color: var(--text);
+      min-width: 240px;
+    }
+    .legend-title { font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+    .legend-bar { height: 10px; border-radius: 999px; overflow: hidden; border:1px solid var(--border); background: rgba(0,0,0,.35); }
+    .legend-ticks { display:flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 6px; }
+    .legend-note { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.25; }
+
+    /* loader overlay */
+    #loadingOverlay{
+      position: fixed; inset: 0;
+      background: rgba(11,15,20,.72);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 5000;
+      backdrop-filter: blur(6px);
+    }
+    #loadingOverlay.hidden{ display:none; }
+    .loaderCard{
+      width: min(540px, calc(100vw - 40px));
+      border:1px solid var(--border);
+      background: rgba(15,23,33,.94);
+      border-radius: 14px;
+      padding: 14px 14px;
+      box-shadow: var(--shadow);
+    }
+    .loaderTitle{ font-size: 13px; font-weight: 700; }
+    .loaderMsg{ margin-top: 8px; font-size: 12px; color: var(--muted); line-height: 1.35; }
+    .barOuter{ margin-top: 10px; height: 10px; border-radius: 999px; background: rgba(255,255,255,.06); border:1px solid var(--border); overflow:hidden; }
+    .barInner{ height:100%; width: 12%; background: rgba(122,166,255,.55); border-radius: 999px; animation: indet 1.3s ease-in-out infinite; }
+    @keyframes indet{ 0%{ transform: translateX(-40%);} 50%{ transform: translateX(220%);} 100%{ transform: translateX(-40%);} }
+  </style>
+</head>
+<body>
+  <div id="loadingOverlay">
+    <div class="loaderCard">
+      <div class="loaderTitle">Loading…</div>
+      <div class="loaderMsg" id="loadingMsg">Starting</div>
+      <div class="barOuter"><div class="barInner"></div></div>
+      <div class="loaderMsg" style="margin-top:10px;">
+        If this hangs on GitHub Pages, open DevTools → Console and check for 404s on shapefile parts.
+      </div>
+    </div>
+  </div>
+
+  <div id="app">
+    <aside id="sidebar">
+      <div class="topbar">
+        <div class="title">Texas Precinct Map Visualizer</div>
+        <div class="tabs">
+          <button class="tabbtn active" data-tab="results">1. Results</button>
+          <button class="tabbtn" data-tab="swing">2. Swing</button>
+          <button class="tabbtn" data-tab="trend">3. Trend</button>
+          <button class="tabbtn" data-tab="trendChange">4. Trend Change</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="status" id="status">Loading…</div>
+        <div class="kpi">
+          <div class="card"><div class="k">Shapes</div><div class="v" id="kpiShapes">–</div></div>
+          <div class="card"><div class="k">With data</div><div class="v" id="kpiData">–</div></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="label">Data file</div>
+        <select id="dataFile">
+          <option value="precinct-data.csv">precinct-data.csv (raw; key derived from GEOID20)</option>
+          <option value="precinct-data-pctkey.csv">precinct-data-pctkey.csv (pre-keyed to PCTKEY)</option>
+        </select>
+        <div class="status" style="margin-top:8px;">
+          If your join coverage looks wrong, switch to the <code>pctkey</code> file.
+        </div>
+      </div>
+
+      <div class="section tabpanel" id="panel-results">
+        <div class="label">Contest</div>
+        <select id="resultsContest"></select>
+        <div class="label" style="margin-top:10px;">Color</div>
+        <div class="status">Margin = (D−R) / (D+R), in percentage points.</div>
+      </div>
+
+      <div class="section tabpanel hidden" id="panel-swing">
+        <div class="row">
+          <div>
+            <div class="label">From</div>
+            <select id="swingFrom"></select>
+          </div>
+          <div>
+            <div class="label">To</div>
+            <select id="swingTo"></select>
+          </div>
+        </div>
+        <div class="label" style="margin-top:10px;">Color</div>
+        <div class="status">Swing = margin(To) − margin(From), in percentage points.</div>
+      </div>
+
+      <div class="section tabpanel hidden" id="panel-trend">
+        <div class="label">Contest</div>
+        <select id="trendContest"></select>
+        <div class="label" style="margin-top:10px;">Party</div>
+        <div class="pillrow">
+          <button class="pill active" id="trendPartyD">D</button>
+          <button class="pill" id="trendPartyR">R</button>
+        </div>
+        <div class="label" style="margin-top:10px;">Index</div>
+        <div class="status">Trend index = 50 × (Precinct party % / Statewide party %). Baseline is 50.</div>
+      </div>
+
+      <div class="section tabpanel hidden" id="panel-trendChange">
+        <div class="row">
+          <div>
+            <div class="label">From</div>
+            <select id="trendFrom"></select>
+          </div>
+          <div>
+            <div class="label">To</div>
+            <select id="trendTo"></select>
+          </div>
+        </div>
+        <div class="label" style="margin-top:10px;">Party</div>
+        <div class="pillrow">
+          <button class="pill active" id="trendChgPartyD">D</button>
+          <button class="pill" id="trendChgPartyR">R</button>
+        </div>
+        <div class="label" style="margin-top:10px;">Color</div>
+        <div class="status">Trend change = trend(To) − trend(From). (Trend baseline is 50.)</div>
+      </div>
+
+      <div class="section">
+        <div class="label">Repo layout expected</div>
+        <div class="status">
+          <b>Folder:</b> <code>Precincts24G_WGS84/</code><br/>
+          <b>Inside that folder:</b> either <code>Precincts24G_WGS84.{shp,shx,dbf,prj,cpg}</code> or <code>Precincts24G.{shp,shx,dbf,prj,cpg}</code><br/>
+          <b>Data files at root:</b> <code>precinct-data.csv</code> and/or <code>precinct-data-pctkey.csv</code>
+        </div>
+      </div>
+    </aside>
+
+    <main id="map"></main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/chroma-js@2.4.2/chroma.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
+
+  <script>
+    const ASSETS = {
+      shpFolder: "Precincts24G_WGS84",
+      // we will probe these basenames INSIDE shpFolder/
+      shpBasenames: ["Precincts24G_WGS84", "Precincts24G"],
+      defaultDataCsv: "precinct-data.csv"
+    };
+
+    const state = {
+      activeTab: "results",
+      partyTrend: "D",
+      partyTrendChg: "D",
+      dataFile: ASSETS.defaultDataCsv,
+      resultsContest: null,
+      swingFrom: null,
+      swingTo: null,
+      trendContest: null,
+      trendFrom: null,
+      trendTo: null
+    };
+
+    let map, geoLayer, features = [];
+    let dataByKey = new Map();
+    let contests = [];
+    let statewideCache = new Map();
+    let legendCtrl = null;
+
+    function el(id){ return document.getElementById(id); }
+    function setStatus(msg){ el("status").textContent = msg; }
+    function setLoading(msg){ el("loadingMsg").textContent = msg; }
+
+    function hideLoading(){ el("loadingOverlay").classList.add("hidden"); }
+    function showLoading(){ el("loadingOverlay").classList.remove("hidden"); }
+
+    function fmtPctPts(x){
+      if (x === null || x === undefined || Number.isNaN(x)) return "—";
+      const s = (x >= 0 ? "+" : "") + x.toFixed(1);
+      return s + " pts";
+    }
+    function fmtNum(x){
+      if (x === null || x === undefined || Number.isNaN(x)) return "—";
+      return Math.round(x).toLocaleString();
+    }
+
+    function geoid20ToPctKey(geoid20){
+      if (geoid20 === null || geoid20 === undefined) return null;
+      let s = String(geoid20).trim();
+      // handle numeric values that may come in without leading zeros
+      if (/^\d+$/.test(s)) s = s.padStart(11, "0");
+      if (s.length < 11) s = s.padStart(11, "0");
+      // GEOID20 format used in your raw CSV: 48 + countyFIPS(3) + precinct(6)
+      const county = String(parseInt(s.slice(2,5), 10)); // strip leading zeros
+      const prec6 = s.slice(5);
+      const prec4 = prec6.slice(-4).padStart(4, "0");
+      return county + prec4;
+    }
+
+    function normalizeRowKey(r){
+      if (!r) return null;
+      if (r.PCTKEY !== undefined && r.PCTKEY !== null && String(r.PCTKEY).trim() !== "") return String(r.PCTKEY).trim();
+      if (r.GEOID20 !== undefined && r.GEOID20 !== null && String(r.GEOID20).trim() !== "") return geoid20ToPctKey(r.GEOID20);
+      return null;
+    }
+
+    function votesFromProps(p, contest){
+      const dem = +p[contest + "_Dem"] || 0;
+      const rep = +p[contest + "_Rep"] || 0;
+      const tot2 = dem + rep;
+      if (!tot2) return { dem, rep, tot2: 0, demPct: null, repPct: null, margin: null };
+      const demPct = dem / tot2;
+      const repPct = rep / tot2;
+      const margin = (dem - rep) / tot2;
+      return { dem, rep, tot2, demPct, repPct, margin };
+    }
+    function votes(feat, contest){
+      return votesFromProps((feat.properties||{}), contest);
+    }
+
+    function statewide(contest){
+      let dem = 0, rep = 0;
+      for (const f of features){
+        const p = f.properties || {};
+        if (!p.__hasData) continue;
+        const v = votesFromProps(p, contest);
+        dem += v.dem; rep += v.rep;
+      }
+      const tot = dem + rep;
+      if (!tot) return { dem, rep, tot: 0, demPct: null, repPct: null };
+      return { dem, rep, tot, demPct: dem / tot, repPct: rep / tot };
+    }
+    function getStatewide(contest){
+      if (statewideCache.has(contest)) return statewideCache.get(contest);
+      const s = statewide(contest);
+      statewideCache.set(contest, s);
+      return s;
+    }
+
+    function quantile(arr, q){
+      if (!arr.length) return null;
+      const a = arr.slice().sort((x,y)=>x-y);
+      const pos = (a.length - 1) * q;
+      const base = Math.floor(pos);
+      const rest = pos - base;
+      if (a[base + 1] !== undefined) return a[base] + rest * (a[base + 1] - a[base]);
+      return a[base];
+    }
+
+    function computeDomain(metricFn, fallback){
+      const vals = [];
+      for (const f of features){
+        const v = metricFn(f);
+        if (v !== null && v !== undefined && !Number.isNaN(v)) vals.push(v);
+      }
+      if (!vals.length) return fallback;
+      const abs = vals.map(x=>Math.abs(x));
+      const p95 = quantile(abs, 0.95) || 1;
+      const maxAbs = Math.max(1, p95);
+      return [-maxAbs, 0, +maxAbs];
+    }
+
+    function colorFor(scale, v){
+      if (v === null || v === undefined || Number.isNaN(v)) return "rgba(120,130,145,.25)";
+      return scale(v).hex();
+    }
+
+    function buildContestList(sampleRow){
+      const keys = Object.keys(sampleRow || {});
+      const prefixes = new Set();
+      for (const k of keys){
+        if (!k.endsWith("_Dem")) continue;
+        const prefix = k.slice(0, -4);
+        if (Object.prototype.hasOwnProperty.call(sampleRow, prefix + "_Rep")) prefixes.add(prefix);
+      }
+      const arr = Array.from(prefixes);
+      arr.sort((a,b)=>{
+        const ya = (a.match(/^E_(\d{2})_/)||[])[1];
+        const yb = (b.match(/^E_(\d{2})_/)||[])[1];
+        const na = parseInt(ya || "0", 10);
+        const nb = parseInt(yb || "0", 10);
+        if (na !== nb) return nb - na;
+        return a.localeCompare(b);
+      });
+      return arr;
+    }
+
+    function labelContest(prefix){
+      const m = prefix.match(/^E_(\d{2})_(.+)$/);
+      if (!m) return prefix;
+      const yy = m[1], rest = m[2];
+      const yyyy = 2000 + parseInt(yy, 10);
+      return `${yyyy} ${rest.replaceAll("_"," ")}`;
+    }
+
+    function populateSelect(sel, items, value){
+      sel.innerHTML = "";
+      for (const it of items){
+        const opt = document.createElement("option");
+        opt.value = it;
+        opt.textContent = labelContest(it);
+        sel.appendChild(opt);
+      }
+      if (value && items.includes(value)) sel.value = value;
+      else if (items.length) sel.value = items[0];
+    }
+
+    function applyTab(tab){
+      state.activeTab = tab;
+      document.querySelectorAll(".tabbtn").forEach(b=>{
+        b.classList.toggle("active", b.dataset.tab === tab);
+      });
+      document.querySelectorAll(".tabpanel").forEach(p=>p.classList.add("hidden"));
+      el("panel-" + tab).classList.remove("hidden");
+      updateMap();
+    }
+
+    function setPill(btnA, btnB, which){
+      btnA.classList.toggle("active", which === "D");
+      btnB.classList.toggle("active", which === "R");
+    }
+
+    function swingMetric(){
+      const from = state.swingFrom, to = state.swingTo;
+      const dom = computeDomain(f=>{
+        const m1 = votes(f, from).margin;
+        const m2 = votes(f, to).margin;
+        if (m1 === null || m2 === null) return null;
+        return (m2 - m1) * 100;
+      }, [-15,0,15]);
+      return { domain: dom, scale: chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain(dom).mode("lab") };
+    }
+
+    function trendDelta(feat, contest, party){
+      const v = votes(feat, contest);
+      if (!v.tot2) return null;
+      const s = getStatewide(contest);
+      const precPct = (party === "D") ? v.demPct : v.repPct;
+      const stPct = (party === "D") ? s.demPct : s.repPct;
+      if (!precPct || !stPct) return null;
+      const idx = 50 * (precPct / stPct);
+      return idx - 50;
+    }
+
+    function trendMetric(party){
+      const c = state.trendContest;
+      const dom = computeDomain(f=>trendDelta(f, c, party), [-25,0,25]);
+      const colors = (party === "D") ? ["#b2182b","#f7f7f7","#2166ac"] : ["#2166ac","#f7f7f7","#b2182b"];
+      return { domain: dom, scale: chroma.scale(colors).domain(dom).mode("lab") };
+    }
+
+    function trendIndexValue(feat, contest, party){
+      const v = votes(feat, contest);
+      if (!v.tot2) return null;
+      const s = getStatewide(contest);
+      const precPct = (party === "D") ? v.demPct : v.repPct;
+      const stPct = (party === "D") ? s.demPct : s.repPct;
+      if (!precPct || !stPct) return null;
+      return 50 * (precPct / stPct);
+    }
+
+    function trendChange(feat, from, to, party){
+      const a = trendIndexValue(feat, from, party);
+      const b = trendIndexValue(feat, to, party);
+      if (a === null || b === null) return null;
+      return b - a;
+    }
+
+    function trendChgMetric(party){
+      const from = state.trendFrom, to = state.trendTo;
+      const dom = computeDomain(f=>trendChange(f, from, to, party), [-12,0,12]);
+      const colors = (party === "D") ? ["#b2182b","#f7f7f7","#2166ac"] : ["#2166ac","#f7f7f7","#b2182b"];
+      return { domain: dom, scale: chroma.scale(colors).domain(dom).mode("lab") };
+    }
+
+    function styleForFeature(feat){
+      const p = feat.properties || {};
+      const has = !!p.__hasData;
+
+      let fill = "rgba(120,130,145,.25)";
+      let weight = 0.55;
+      let opacity = 0.65;
+      let color = "rgba(0,0,0,.48)";
+      let fillOpacity = has ? 0.86 : 0.10;
+
+      if (!has){
+        return { fillColor: fill, fillOpacity, color, opacity, weight, lineJoin: "round", lineCap: "round" };
+      }
+
+      const tab = state.activeTab;
+
+      if (tab === "results"){
+        const c = state.resultsContest;
+        const m = votes(feat, c).margin;
+        const v = (m === null ? null : m * 100);
+        const scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain([-100,0,100]).mode("lab");
+        fill = colorFor(scale, v);
+      } else if (tab === "swing"){
+        const from = state.swingFrom, to = state.swingTo;
+        const m1 = votes(feat, from).margin;
+        const m2 = votes(feat, to).margin;
+        const v = (m1 === null || m2 === null) ? null : (m2 - m1) * 100;
+        const metric = swingMetric();
+        fill = colorFor(metric.scale, v);
+      } else if (tab === "trend"){
+        const c = state.trendContest;
+        const party = state.partyTrend;
+        const v = trendDelta(feat, c, party);
+        const metric = trendMetric(party);
+        fill = colorFor(metric.scale, v);
+      } else if (tab === "trendChange"){
+        const from = state.trendFrom, to = state.trendTo;
+        const party = state.partyTrendChg;
+        const v = trendChange(feat, from, to, party);
+        const metric = trendChgMetric(party);
+        fill = colorFor(metric.scale, v);
+      }
+
+      return { fillColor: fill, fillOpacity, color, opacity, weight, lineJoin: "round", lineCap: "round" };
+    }
+
+    function updateLegend(){
+      if (!legendCtrl) return;
+
+      let title = "", domain = [-1,0,1], note = "";
+      let scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain([-1,0,1]).mode("lab");
+
+      if (state.activeTab === "results"){
+        title = "Margin (D − R), pts";
+        domain = [-100,0,100];
+        note = "Negative = R-leaning. Positive = D-leaning.";
+        scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain(domain).mode("lab");
+      } else if (state.activeTab === "swing"){
+        const m = swingMetric();
+        title = "Swing (To − From), pts";
+        domain = m.domain;
+        note = "Negative = shifts R. Positive = shifts D.";
+        scale = chroma.scale(["#b2182b","#f7f7f7","#2166ac"]).domain(domain).mode("lab");
+      } else if (state.activeTab === "trend"){
+        const m = trendMetric(state.partyTrend);
+        title = `${state.partyTrend} trend delta (index − 50)`;
+        domain = m.domain;
+        note = "Baseline 0 means precinct equals statewide trend.";
+        scale = m.scale;
+      } else if (state.activeTab === "trendChange"){
+        const m = trendChgMetric(state.partyTrendChg);
+        title = `${state.partyTrendChg} trend change (To − From)`;
+        domain = m.domain;
+        note = "Units are trend-index points.";
+        scale = m.scale;
+      }
+
+      const stops = [];
+      for (let i=0;i<=30;i++){
+        const t=i/30;
+        const v = domain[0] + t*(domain[2]-domain[0]);
+        stops.push(`${scale(v).hex()} ${Math.round(t*100)}%`);
+      }
+
+      legendCtrl._div.querySelector(".legend-title").textContent = title;
+      legendCtrl._div.querySelector(".legend-bar").style.background = `linear-gradient(90deg, ${stops.join(", ")})`;
+      const ticks = legendCtrl._div.querySelectorAll(".legend-ticks span");
+      ticks[0].textContent = domain[0].toFixed(0);
+      ticks[1].textContent = domain[1].toFixed(0);
+      ticks[2].textContent = domain[2].toFixed(0);
+      legendCtrl._div.querySelector(".legend-note").textContent = note;
+    }
+
+    function updateMap(){
+      if (!geoLayer) return;
+      statewideCache = new Map();
+      geoLayer.setStyle(styleForFeature);
+      updateLegend();
+    }
+
+    // Leaflet onEachFeature signature is (feature, layer)
+    function attachPopup(feat, layer){
+      layer.on("click", ()=>{
+        const p = feat.properties || {};
+        const key = p.PCTKEY || "—";
+        let html = `<div class="popup-title">PCTKEY ${key}</div>`;
+        html += `<div class="popup-small">County: ${p.CNTY} • Precinct: ${p.PREC}</div>`;
+
+        if (!p.__hasData){
+          html += `<div class="popup-small">No joined election data for this precinct.</div>`;
+          layer.bindPopup(html, { maxWidth: 320 }).openPopup();
+          return;
+        }
+
+        const tab = state.activeTab;
+        const contestFor = (tab==="results") ? state.resultsContest :
+                           (tab==="trend") ? state.trendContest :
+                           (tab==="swing") ? state.swingTo :
+                           (tab==="trendChange") ? state.trendTo : state.resultsContest;
+
+        const v = votes(feat, contestFor);
+        const marginPts = v.margin === null ? null : v.margin * 100;
+
+        html += `<div class="popup-grid">
+                  <div><div class="k">Contest</div><div class="v">${labelContest(contestFor)}</div></div>
+                  <div><div class="k">Margin</div><div class="v">${fmtPctPts(marginPts)}</div></div>
+                </div>`;
+
+        html += `<div class="popup-grid" style="margin-top:8px;">
+                  <div><div class="k">D votes</div><div class="v">${fmtNum(v.dem)}</div></div>
+                  <div><div class="k">R votes</div><div class="v">${fmtNum(v.rep)}</div></div>
+                </div>`;
+
+        if (tab === "swing"){
+          const m1 = votes(feat, state.swingFrom).margin;
+          const m2 = votes(feat, state.swingTo).margin;
+          const sw = (m1===null||m2===null)?null:(m2-m1)*100;
+          html += `<div class="popup-small">Swing (${labelContest(state.swingFrom)} → ${labelContest(state.swingTo)}): <b>${fmtPctPts(sw)}</b></div>`;
+        }
+
+        if (tab === "trend"){
+          const idx = trendIndexValue(feat, state.trendContest, state.partyTrend);
+          html += `<div class="popup-small">${state.partyTrend} trend index: <b>${idx===null?"—":idx.toFixed(1)}</b> (baseline 50)</div>`;
+        }
+
+        if (tab === "trendChange"){
+          const chg = trendChange(feat, state.trendFrom, state.trendTo, state.partyTrendChg);
+          html += `<div class="popup-small">${state.partyTrendChg} trend change (${labelContest(state.trendFrom)} → ${labelContest(state.trendTo)}): <b>${chg===null?"—":chg.toFixed(1)}</b></div>`;
+        }
+
+        layer.bindPopup(html, { maxWidth: 340 }).openPopup();
+      });
+
+      layer.on("mouseover", (e)=>{
+        e.target.setStyle({ weight: 1.5, opacity: 0.9, color: "rgba(255,255,255,.75)" });
+      });
+      layer.on("mouseout", (e)=>{
+        geoLayer.resetStyle(e.target);
+      });
+    }
+
+    async function loadCsv(url){
+      return new Promise((resolve, reject)=>{
+        Papa.parse(url, {
+          download: true,
+          header: true,
+          dynamicTyping: true,
+          skipEmptyLines: true,
+          complete: (res)=> resolve(res.data),
+          error: (err)=> reject(err)
+        });
+      });
+    }
+
+    async function urlExists(url){
+      try {
+        const r = await fetch(url, { method: "HEAD" });
+        if (r.ok) return true;
+      } catch(_e) {}
+      // Some hosts block HEAD; try GET (range isn't always supported on GH Pages)
+      try {
+        const r2 = await fetch(url);
+        return r2.ok;
+      } catch(_e2) {
+        return false;
+      }
+    }
+
+    async function pickShapefileBase(){
+      for (const base of ASSETS.shpBasenames){
+        const fullBase = `${ASSETS.shpFolder}/${base}`;
+        const shpUrl = `${fullBase}.shp`;
+        const dbfUrl = `${fullBase}.dbf`;
+        const ok = await urlExists(shpUrl) && await urlExists(dbfUrl);
+        if (ok) return fullBase;
+      }
+      throw new Error(`Cannot find shapefile parts in ${ASSETS.shpFolder}/. Expected basenames: ${ASSETS.shpBasenames.join(", ")}`);
+    }
+
+    async function buildZipFromFolder(basePathNoExt){
+      const baseName = basePathNoExt.split("/").pop();
+      const exts = ["shp","shx","dbf","prj","cpg"];
+      const zip = new JSZip();
+      await Promise.all(exts.map(async ext => {
+        const url = `${basePathNoExt}.${ext}`;
+        const r = await fetch(url);
+        if (!r.ok){
+          // cpg is optional
+          if (ext === "cpg") return;
+          throw new Error(`Missing shapefile part: ${url} (${r.status})`);
+        }
+        const buf = await r.arrayBuffer();
+        zip.file(`${baseName}.${ext}`, buf);
+      }));
+      // build zip in memory; no zip file in repo
+      return await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
+    }
+
+    async function loadShapefileFromFolder(){
+      const base = await pickShapefileBase();
+      setLoading(`Reading shapefile parts from ${base}.* (zipped in-memory)`);
+      const zipBuf = await buildZipFromFolder(base);
+      // shpjs returns GeoJSON FeatureCollection
+      return await shp(zipBuf);
+    }
+
+    function mergeDataIntoFeatures(fc, rows){
+      dataByKey = new Map();
+      for (const r of rows){
+        const key = normalizeRowKey(r);
+        if (!key) continue;
+        dataByKey.set(String(key), r);
+      }
+
+      let withData = 0;
+      for (const f of fc.features){
+        const props = f.properties || (f.properties = {});
+        const key = String(props.PCTKEY || "");
+        const r = dataByKey.get(key);
+
+        if (r){
+          for (const k of Object.keys(r)){
+            // don't overwrite geometry keys
+            if (k === "PCTKEY") continue;
+            props[k] = r[k];
+          }
+          props.__hasData = true;
+          withData++;
+        } else {
+          props.__hasData = false;
+        }
+
+        if (props.CNTY !== undefined) props.CNTY = parseInt(props.CNTY, 10);
+        if (props.PREC !== undefined) props.PREC = String(props.PREC).padStart(4,"0");
+      }
+
+      return { withData, total: fc.features.length };
+    }
+
+    function initMap(fc){
+      map = L.map("map", {
+        preferCanvas: true,
+        zoomSnap: 0.5,
+        zoomDelta: 0.5,
+        wheelPxPerZoomLevel: 110
+      });
+
+      const tiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+        attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+        maxZoom: 18
+      });
+      tiles.addTo(map);
+
+      const renderer = L.canvas({ padding: 0.5 });
+
+      geoLayer = L.geoJSON(fc, {
+        renderer,
+        style: styleForFeature,
+        smoothFactor: 0,
+        onEachFeature: attachPopup
+      }).addTo(map);
+
+      try { map.fitBounds(geoLayer.getBounds(), { padding: [10,10] }); } catch(_e) {}
+
+      legendCtrl = L.control({ position: "bottomright" });
+      legendCtrl.onAdd = function(){
+        const div = L.DomUtil.create("div", "legend");
+        div.innerHTML = `
+          <div class="legend-title"></div>
+          <div class="legend-bar"></div>
+          <div class="legend-ticks"><span>–</span><span>–</span><span>–</span></div>
+          <div class="legend-note"></div>
+        `;
+        return div;
+      };
+      legendCtrl.addTo(map);
+      updateLegend();
+    }
+
+    function wireUI(){
+      document.querySelectorAll(".tabbtn").forEach(btn=>{
+        btn.addEventListener("click", ()=> applyTab(btn.dataset.tab));
+      });
+
+      el("dataFile").addEventListener("change", async ()=>{
+        state.dataFile = el("dataFile").value;
+        await reloadDataOnly();
+      });
+
+      el("resultsContest").addEventListener("change", ()=>{
+        state.resultsContest = el("resultsContest").value;
+        updateMap();
+      });
+      el("swingFrom").addEventListener("change", ()=>{
+        state.swingFrom = el("swingFrom").value;
+        updateMap();
+      });
+      el("swingTo").addEventListener("change", ()=>{
+        state.swingTo = el("swingTo").value;
+        updateMap();
+      });
+      el("trendContest").addEventListener("change", ()=>{
+        state.trendContest = el("trendContest").value;
+        updateMap();
+      });
+      el("trendFrom").addEventListener("change", ()=>{
+        state.trendFrom = el("trendFrom").value;
+        updateMap();
+      });
+      el("trendTo").addEventListener("change", ()=>{
+        state.trendTo = el("trendTo").value;
+        updateMap();
+      });
+
+      el("trendPartyD").addEventListener("click", ()=>{
+        state.partyTrend = "D";
+        setPill(el("trendPartyD"), el("trendPartyR"), "D");
+        updateMap();
+      });
+      el("trendPartyR").addEventListener("click", ()=>{
+        state.partyTrend = "R";
+        setPill(el("trendPartyD"), el("trendPartyR"), "R");
+        updateMap();
+      });
+
+      el("trendChgPartyD").addEventListener("click", ()=>{
+        state.partyTrendChg = "D";
+        setPill(el("trendChgPartyD"), el("trendChgPartyR"), "D");
+        updateMap();
+      });
+      el("trendChgPartyR").addEventListener("click", ()=>{
+        state.partyTrendChg = "R";
+        setPill(el("trendChgPartyD"), el("trendChgPartyR"), "R");
+        updateMap();
+      });
+    }
+
+    async function reloadDataOnly(){
+      showLoading();
+      setLoading(`Loading ${state.dataFile}…`);
+      setStatus(`Loading ${state.dataFile}…`);
+
+      const rows = await loadCsv(state.dataFile);
+      const joined = mergeDataIntoFeatures({ features }, rows);
+
+      const sample = rows.find(r => r && (r.PCTKEY || r.GEOID20)) || rows[0] || {};
+      contests = buildContestList(sample);
+      if (!contests.length) throw new Error("No contests found (expected columns like E_24_PRES_Dem / _Rep)." );
+
+      const prefer = ["E_24_PRES","E_24_SEN","E_22_GOV","E_20_PRES","E_20_SEN","E_18_SEN","E_16_PRES","E_16-20_COMP"];
+      const pick = (arr)=> prefer.find(x=>arr.includes(x)) || arr[0];
+
+      // keep current selections if possible
+      state.resultsContest = contests.includes(state.resultsContest) ? state.resultsContest : pick(contests);
+      state.swingFrom = contests.includes(state.swingFrom) ? state.swingFrom : (contests.includes("E_20_PRES") ? "E_20_PRES" : contests[0]);
+      state.swingTo = contests.includes(state.swingTo) ? state.swingTo : (contests.includes("E_24_PRES") ? "E_24_PRES" : pick(contests));
+      state.trendContest = contests.includes(state.trendContest) ? state.trendContest : pick(contests);
+      state.trendFrom = contests.includes(state.trendFrom) ? state.trendFrom : (contests.includes("E_20_PRES") ? "E_20_PRES" : contests[0]);
+      state.trendTo = contests.includes(state.trendTo) ? state.trendTo : (contests.includes("E_24_PRES") ? "E_24_PRES" : pick(contests));
+
+      populateSelect(el("resultsContest"), contests, state.resultsContest);
+      populateSelect(el("swingFrom"), contests, state.swingFrom);
+      populateSelect(el("swingTo"), contests, state.swingTo);
+      populateSelect(el("trendContest"), contests, state.trendContest);
+      populateSelect(el("trendFrom"), contests, state.trendFrom);
+      populateSelect(el("trendTo"), contests, state.trendTo);
+
+      el("kpiShapes").textContent = joined.total.toLocaleString();
+      el("kpiData").textContent = joined.withData.toLocaleString();
+
+      statewideCache = new Map();
+      updateMap();
+
+      setStatus(`Loaded. Shapes: ${joined.total.toLocaleString()} • With data: ${joined.withData.toLocaleString()}`);
+      hideLoading();
+    }
+
+    async function main(){
+      showLoading();
+      setLoading("Loading precinct geometries…");
+      setStatus("Loading precinct geometries…");
+      const fc = await loadShapefileFromFolder();
+
+      features = fc.features;
+      setLoading(`Loaded ${features.length.toLocaleString()} polygons. Loading data…`);
+      setStatus("Loading precinct data…");
+
+      // initial data load uses dropdown value
+      state.dataFile = el("dataFile").value;
+      const rows = await loadCsv(state.dataFile);
+
+      setLoading("Joining data to precincts…");
+      const joined = mergeDataIntoFeatures(fc, rows);
+
+      const sample = rows.find(r => r && (r.PCTKEY || r.GEOID20)) || rows[0] || {};
+      contests = buildContestList(sample);
+      if (!contests.length){
+        throw new Error("No contests found (expected columns like E_24_PRES_Dem / _Rep)." );
+      }
+
+      const prefer = ["E_24_PRES","E_24_SEN","E_22_GOV","E_20_PRES","E_20_SEN","E_18_SEN","E_16_PRES","E_16-20_COMP"];
+      const pick = (arr)=> prefer.find(x=>arr.includes(x)) || arr[0];
+
+      state.resultsContest = pick(contests);
+      state.swingFrom = contests.includes("E_20_PRES") ? "E_20_PRES" : contests[0];
+      state.swingTo = contests.includes("E_24_PRES") ? "E_24_PRES" : pick(contests);
+      state.trendContest = pick(contests);
+      state.trendFrom = contests.includes("E_20_PRES") ? "E_20_PRES" : contests[0];
+      state.trendTo = contests.includes("E_24_PRES") ? "E_24_PRES" : pick(contests);
+
+      populateSelect(el("resultsContest"), contests, state.resultsContest);
+      populateSelect(el("swingFrom"), contests, state.swingFrom);
+      populateSelect(el("swingTo"), contests, state.swingTo);
+      populateSelect(el("trendContest"), contests, state.trendContest);
+      populateSelect(el("trendFrom"), contests, state.trendFrom);
+      populateSelect(el("trendTo"), contests, state.trendTo);
+
+      el("kpiShapes").textContent = joined.total.toLocaleString();
+      el("kpiData").textContent = joined.withData.toLocaleString();
+
+      wireUI();
+      initMap(fc);
+
+      setStatus(`Loaded. Shapes: ${joined.total.toLocaleString()} • With data: ${joined.withData.toLocaleString()}`);
+      hideLoading();
+    }
+
+    main().catch(err=>{
+      console.error(err);
+      setStatus("Load failed. Open console. Most common cause: wrong shapefile filenames inside Precincts24G_WGS84/.");
+      setLoading(String(err && err.message ? err.message : err));
+    });
+  </script>
+</body>
+</html>
